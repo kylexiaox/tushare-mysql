@@ -17,10 +17,10 @@ from multiprocessing import Process
 
 def everyday_run(tsmWFQ, tsmQFQ, tsmBasic, tsmIndex):
     print('timer is running ' + time.strftime('%Y-%m-%d %H:%M:%S'))
-    schedule.every().day.at("22:40").do(tsmWFQ.update())
-    schedule.every().day.at("22:40").do(tsmQFQ.update())
-    schedule.every().day.at("22:40").do(tsmBasic.update())
-    schedule.every().day.at("22:40").do(tsmIndex.update())
+    schedule.every().day.at("22:40").do(tsmWFQ.update)
+    schedule.every().day.at("22:40").do(tsmQFQ.update)
+    schedule.every().day.at("22:40").do(tsmBasic.update)
+    schedule.every().day.at("22:40").do(tsmIndex.update)
 
     while True:
         schedule.run_pending()
