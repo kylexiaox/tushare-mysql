@@ -36,9 +36,9 @@ def get_logger(name):
 
     # 按指定格式输出到控制台
     sh = stream_handler(formats)
-    _logger.addHandler(sh)
+    # _logger.addHandler(sh)
     fh.close()
-    sh.close()
+    # sh.close()
     return _logger
 
 

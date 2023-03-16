@@ -8,7 +8,6 @@ coding:utf-8
     DataBase Utils
 '''
 import pymysql
-import tushare as ts
 from config import *
 
 
@@ -30,8 +29,23 @@ class DButils():
     def __init__(self):
         self.db = pymysql.connect(**DB_CONFIG)
         self.cursor = self.db.cursor()
-        sql_dabase = 'use ts_stock;'
-        self.cursor.execute(sql_dabase)
+        self.cursor_d = self.db.cursor(cursor=pymysql.cursors.DictCursor)
+        sql_database = 'use ts_stock;'
+        self.cursor.execute(sql_database)
+
+    def refresh(self):
+        try:
+            sql_database = 'use ts_stock;'
+            self.cursor.execute(sql_database)
+            print('database connection is ok')
+        except Exception as e:
+            self.db = pymysql.connect(**DB_CONFIG)
+            self.cursor = self.db.cursor()
+            self.cursor_d = self.db.cursor(cursor=pymysql.cursors.DictCursor)
+            print('reboot database connection')
+
+
+
 
 
 db: DButils = DButils()

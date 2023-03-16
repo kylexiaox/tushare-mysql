@@ -12,15 +12,19 @@ import time
 
 import schedule
 from ts_mysql import *
+from dbutils import *
 from multiprocessing import Process
 
 
 def everyday_run(tsmWFQ, tsmQFQ, tsmBasic, tsmIndex):
     print('timer is running ' + time.strftime('%Y-%m-%d %H:%M:%S'))
-    schedule.every().day.at("22:40").do(tsmWFQ.update())
-    schedule.every().day.at("22:40").do(tsmQFQ.update())
-    schedule.every().day.at("22:40").do(tsmBasic.update())
-    schedule.every().day.at("22:40").do(tsmIndex.update())
+    schedule.every(1).hour.do(db.refresh)
+    schedule.every().day.at("17:00").do(tsmWFQ.update)
+    schedule.every().day.at("17:00").do(tsmQFQ.update)
+    schedule.every().day.at("17:00").do(tsmBasic.update)
+    schedule.every().day.at("17:00").do(tsmIndex.update)
+
+
 
     while True:
         schedule.run_pending()
@@ -32,8 +36,8 @@ if __name__ == '__main__':
     tsmQFQ: TushareMysqlEngine = TushareMysqlEngineQFQ()
     tsmBasic: TushareMysqlEngine = TushareMysqlEngineBASIC()
     tsmIndex: TushareMysqlEngineIndex = TushareMysqlEngineIndex()
-    # everyday_run()
-    tsmWFQ.update()
-    tsmQFQ.update()
-    tsmBasic.update()
-    tsmIndex.update()
+    everyday_run(tsmWFQ, tsmQFQ, tsmBasic, tsmIndex)
+    # tsmWFQ.update()
+    # tsmQFQ.update()
+    # tsmBasic.update()
+    # tsmIndex.update()

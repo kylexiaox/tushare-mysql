@@ -7,6 +7,7 @@ coding:utf-8
 @Description: 通过TUSHARE 获取数据，并存入mysql中
 
 """
+import decimal
 from datetime import *
 from ts_mysql import *
 from dbutils import *
@@ -14,6 +15,7 @@ from ts_api import *
 import pandas as pd
 import numpy as np
 from logger import *
+from decimal import Decimal
 
 """
 数据落表的父类，不同表进行不同实现
@@ -70,6 +72,7 @@ class TushareMysqlEngine():
                     return trade_date
                 else:
                     self.logger.info('record in date ' + trade_date + ' is not proper in table ' + self.table_name)
+        return START_DATE
 
     def get_stock_list(self):
         """
@@ -78,13 +81,28 @@ class TushareMysqlEngine():
         df = api.query(api_name='stock_basic')
         return df['ts_code'].tolist()
 
+    def check_open_day(self,date)->bool:
+        """
+        判断当日是否是交易日
+        """
+        df = api.query('trade_cal', start_date=date, end_date=date)
+        if df is None:
+            return False
+        if df.empty:
+            return False
+        elif df.iloc[0]['is_open'] == 0:
+            return False
+        else:
+            return True
+
+
     def clear_data(self, start_dt=START_DATE, stocks=None):
         """
         清除某日期前的数据,如果股票列表为None,则全部股票清除
         """
         sql = ""
         if start_dt is not None:
-            dt_suffix = " and trade_date >='%s'" % start_dt
+            dt_suffix = " and trade_date >'%s'" % start_dt
         else:
             dt_suffix = ''
         if stocks is not None:
@@ -92,7 +110,7 @@ class TushareMysqlEngine():
                 sql = "delete from %s where ts_code = '%s' " % (self.table_name, s)
                 sql = sql + dt_suffix
         elif start_dt is not None:
-            sql = "delete from %s where trade_date>='%s'" % (self.table_name, start_dt)
+            sql = "delete from %s where trade_date>'%s'" % (self.table_name, start_dt)
         else:
             sql = "delete from %s where 1=1" % self.table_name
         db.cursor.execute(sql)
@@ -111,14 +129,10 @@ class TushareMysqlEngine():
         if not is_inital:
             last_trade_date = self.check_update_date()
             self.clear_data(last_trade_date)
-            if last_trade_date != START_DATE:
-                last_trade_date = (
-                        datetime.strptime(last_trade_date, '%Y%m%d') + timedelta(days=1)).strftime(
-                    "%Y%m%d")
-            self.update_data(start_dt=last_trade_date)
+            self.update_data(last_trade_date=last_trade_date)
         else:
             self.clear_data(start_dt=None)
-            self.update_data(start_dt=START_DATE)
+            self.update_data(last_trade_date=START_DATE)
 
 
 class TushareMysqlEngineWFQ(TushareMysqlEngine):
@@ -151,9 +165,11 @@ class TushareMysqlEngineWFQ(TushareMysqlEngine):
         self.logger.info('create the table %s if not exist ' % self.table_name)
         return 1
 
-    def update_data(self, start_dt=None, stocks=None):
-        if start_dt is None:
+    def update_data(self, last_trade_date=None, stocks=None):
+        if last_trade_date is None:
             start_dt = START_DATE
+        else:
+            start_dt = (datetime.strptime(last_trade_date, '%Y%m%d') + timedelta(days=1)).strftime("%Y%m%d")
         # ---获取列名
         col_sql = 'describe %s ' % self.table_name
         db.cursor.execute(col_sql)
@@ -178,6 +194,10 @@ class TushareMysqlEngineWFQ(TushareMysqlEngine):
         sql_value = sql_value[0: len(sql_value) - 2]
         sql_value += " )"
         end_dt = datetime.now().strftime('%Y%m%d')
+        if start_dt == end_dt:
+            if not self.check_open_day(start_dt):
+                self.logger.info("date %s is closed" % start_dt)
+                return
         # ---获取数据
         if stocks is None:
             stocks = self.get_stock_list()
@@ -185,20 +205,11 @@ class TushareMysqlEngineWFQ(TushareMysqlEngine):
             df = api.pro_bar(ts_code=s, asset='E',
                              adj=None, freq='D', factors=['vr', 'tor'], adjfactor=True,
                              start_date=start_dt, end_date=end_dt)
-            if len(df) == 6000:  # 最多下载6000条记录
-                last_download_date = df['trade_date'].iloc[-1]
-                last_download_date = (datetime.datetime.strptime(last_download_date, '%Y%m%d')
-                                      - datetime.timedelta(days=1)).strftime("%Y%m%d")
-                df2 = api.pro_bar(ts_code=s, asset='E',
-                                  adj=None, freq='D', adjfactor=True,
-                                  start_date=start_dt, end_date=last_download_date, factors=['vr', 'tor'])
-                if len(df2) > 0:
-                    df = pd.concat([df, df2], axis=0)
             if df is None:
-                self.logger.info('stock ' + s + ' is Empty')
+                self.logger.info('updating stock: %s from %s to %s, the data is None!'% (s,start_dt,end_dt))
             else:
                 # ---改变列名
-                self.logger.info('stock ' + s + ' is updating')
+                self.logger.info('updating stock: %s from %s to %s' % (s,start_dt,end_dt))
                 df.rename(columns={'change': 'close_chg'}, inplace=True)
                 df.drop_duplicates(inplace=True)
                 df = df.sort_values(by=['trade_date'], ascending=False)
@@ -255,7 +266,7 @@ class TushareMysqlEngineQFQ(TushareMysqlEngine):
         sql_comm = sql_comm[0: len(sql_comm) - 2]
         sql_comm += ") engine=innodb default charset=utf8mb4;"
         db.cursor.execute(sql_comm)
-        logger.qfqlogger.info('create the table %s if not exist ' % self.table_name)
+        self.logger.info('create the table %s if not exist ' % self.table_name)
         return 1
 
     def __check_qfq_update(self, date):
@@ -276,7 +287,7 @@ class TushareMysqlEngineQFQ(TushareMysqlEngine):
             c1 = df['close'].tail(1).values[0]
             if c1 != float(i[2]):
                 l.append(i[0])
-            logger.qfqlogger.info(date + ' need update stocks in ' + l)
+            self.logger.info(date + ' need update stocks in ' + l)
         return r
 
     def __get_qfq_info(self):
@@ -291,13 +302,23 @@ class TushareMysqlEngineQFQ(TushareMysqlEngine):
             qfq_info[i[0]] = i
         return qfq_info
 
-    def update_data(self, start_dt=None, stocks=None):
+    def __get_qfq_adj(self,date):
+        """ 获取前复权因子 """
+        sql = "select * from stock_all_daily_qfq where trade_date = '%s'" % date
+        db.cursor.execute(sql)
+        r = db.cursor.fetchall()
+        adj = dict()
+        for i in r:
+            adj[i[2]] = i[14]
+        return adj
+
+    def update_data(self, last_trade_date=None, stocks=None):
         end_dt = datetime.now().strftime('%Y%m%d')
-        qfq_infos = None
-        if start_dt is None:
+        if last_trade_date is None:
             start_dt = START_DATE
         else:
-            qfq_infos = self.__get_qfq_info()
+            start_dt = (datetime.strptime(last_trade_date, '%Y%m%d') + timedelta(days=1)).strftime("%Y%m%d")
+        adj_info = self.__get_qfq_adj(last_trade_date)
         # ---获取列名
         col_sql = 'describe %s ' % self.table_name
         db.cursor.execute(col_sql)
@@ -322,43 +343,39 @@ class TushareMysqlEngineQFQ(TushareMysqlEngine):
         sql_value = sql_value[0: len(sql_value) - 2]
         sql_value += " )"
         # ---获取数据
+        if start_dt == end_dt:
+            if not self.check_open_day(start_dt):
+                self.logger.info("date %s is closed" % start_dt)
+                return
         if stocks is None:
             stocks = self.get_stock_list()
         for s in stocks:
-            qfq_info = qfq_infos.get(s)
-            if qfq_info is not None:
-                # 该股票的复权信息存在，且此次更新的时间要晚于该股票的上市时间
-                if start_dt > qfq_info[1]:
-                    temp_start_dt = qfq_info[1]
-            else:
-                temp_start_dt = start_dt
+            adj = adj_info.get(s)
             df = api.pro_bar(ts_code=s, asset='E',
                              adj='qfq', freq='D', factors=['vr', 'tor'], adjfactor=True,
-                             start_date=temp_start_dt, end_date=end_dt, ma=(5, 10, 20, 30, 60))
+                             start_date=start_dt, end_date=end_dt, ma=(5, 10, 20, 30, 60))
             if df is None:
-                logger.qfqlogger.info('stock: ' + s + ' is Empty')
+                self.logger.info('updating stock: %s from %s to %s, the data is None!'% (s,start_dt,end_dt))
                 continue
-            if len(df) == 6000:  # 最多下载6000条记录
-                last_download_date = df['trade_date'].iloc[-1]
-                last_download_date = (datetime.datetime.strptime(last_download_date, '%Y%m%d')
-                                      - datetime.timedelta(days=1)).strftime("%Y%m%d")
-                df2 = api.pro_bar(ts_code=s, asset='E',
-                                  adj=None, freq='D', adjfactor=True,
-                                  start_date=start_dt, end_date=last_download_date, factors=['vr', 'tor'])
-                if len(df2) > 0:
-                    df = pd.concat([df, df2], axis=0)
-                close_new = df['close'].tail(1).values[0]
-                close_old = qfq_info[2]
-                if close_new != close_old:
-                    # --- 复权信息发生变化
-                    logger.qfqlogger.info('stock code: %s need to updte all cause the qfq was changed')
-                    # --- 清除该只股票的历史记录
-                    self.clear_data(start_dt=None, stocks=list().append(s))
-                else:
-                    # --- 复权信息不变
-                    df = df[df['trade_date'] >= start_dt]
-                # ---改变列名
-            logger.qfqlogger.info('stock ' + s + ' is updating')
+            if df.empty:
+                self.logger.info('updating stock: %s from %s to %s, the data is Empty!'% (s,start_dt,end_dt))
+                continue
+            adj_new = df['adj_factor'].head(1).values[0]
+            adj_new = decimal.Decimal(str(adj_new).split('.')[0] + '.' + str(adj_new).split('.')[1][:3]) # 保留三位小数，不四舍五入
+            if adj is None:
+                pass
+            elif abs(adj_new - adj)> 0.003:
+                # --- 复权信息发生变化
+                self.logger.info('stock code: %s need to update all cause the adj was changed'% s)
+                # --- 清除该只股票的历史记录
+                sl = list().append(s)
+                if sl is not None:
+                    self.clear_data(start_dt=None, stocks=sl)
+                df = api.pro_bar(ts_code=s, asset='E',
+                                 adj='qfq', freq='D', factors=['vr', 'tor'], adjfactor=True,
+                                 start_date=START_DATE, end_date=end_dt, ma=(5, 10, 20, 30, 60))
+            # ---改变列名
+            self.logger.info('updating stock: %s from %s to %s' % (s,start_dt,end_dt))
             df.rename(columns={'change': 'close_chg'}, inplace=True)
             df.drop_duplicates(inplace=True)
             df = df.sort_values(by=['trade_date'], ascending=False)
@@ -383,9 +400,9 @@ class TushareMysqlEngineQFQ(TushareMysqlEngine):
                     db.cursor.execute(sql_impl)
                     db.db.commit()
                 except Exception as err:
-                    logger.qfqlogger.error(err)
+                    self.logger.error(err)
                     continue
-        logger.qfqlogger.info('qfq data is fully updated')
+        self.logger.info('qfq data is fully updated')
 
 
 class TushareMysqlEngineBASIC(TushareMysqlEngine):
@@ -411,12 +428,14 @@ class TushareMysqlEngineBASIC(TushareMysqlEngine):
         sql_comm = sql_comm[0: len(sql_comm) - 2]
         sql_comm += ") engine=innodb default charset=utf8mb4;"
         db.cursor.execute(sql_comm)
-        logger.qfqlogger.info('create the table %s if not exist ' % self.table_name)
+        self.logger.info('create the table %s if not exist ' % self.table_name)
         return 1
 
-    def update_data(self, start_dt=None, stocks=None):
-        if start_dt is None:
+    def update_data(self, last_trade_date=None, stocks=None):
+        if last_trade_date is None:
             start_dt = START_DATE
+        else:
+            start_dt = (datetime.strptime(last_trade_date, '%Y%m%d') + timedelta(days=1)).strftime("%Y%m%d")
         # ---获取列名
         col_sql = 'describe %s ' % self.table_name
         db.cursor.execute(col_sql)
@@ -442,6 +461,10 @@ class TushareMysqlEngineBASIC(TushareMysqlEngine):
         sql_value += " )"
         end_dt = datetime.now().strftime('%Y%m%d')
         # ---获取数据
+        if start_dt == end_dt:
+            if not self.check_open_day(start_dt):
+                self.logger.info("date %s is closed" % start_dt)
+                return
         if stocks is None:
             stocks = self.get_stock_list()
         for s in stocks:
@@ -454,10 +477,10 @@ class TushareMysqlEngineBASIC(TushareMysqlEngine):
                 if len(df2) > 0:
                     df = pd.concat([df, df2], axis=0)
             if df is None:
-                self.logger.info('stock ' + s + ' is Empty')
+                self.logger.info('updating stock: %s from %s to %s, the data is None!'% (s,start_dt,end_dt))
             else:
                 # ---改变列名
-                self.logger.info('stock ' + s + ' is updating')
+                self.logger.info('updating stock: %s from %s to %s' % (s,start_dt,end_dt))
                 df.drop_duplicates(inplace=True)
                 df = df.sort_values(by=['trade_date'], ascending=False)
                 df.reset_index(inplace=True, drop=True)
@@ -522,49 +545,26 @@ class TushareMysqlEngineIndex(TushareMysqlEngine):
         sql_comm = sql_comm[0: len(sql_comm) - 2]
         sql_comm += ") engine=innodb default charset=utf8mb4;"
         db.cursor.execute(sql_comm)
-        logger.qfqlogger.info('create the table %s if not exist ' % self.table_name)
+        self.logger.info('create the table %s if not exist ' % self.table_name)
         return 1
 
-    def __get_qfq_info(self):
-        """ 需要更新的前复权股票信息"""
-        sql = "select * from" \
-              "(select ts_code, trade_date, close, row_number() over (partition by ts_code order by trade_date asc) r " \
-              "from %s ) t where t.r =1" % self.table_name
-        db.cursor.execute(sql)
-        r = db.cursor.fetchall()
-        qfq_info = dict()
-        for i in r:
-            qfq_info[i[0]] = i
-        return qfq_info
 
-    def __check_qfq_update(self, date):
-        """
-        需要更新的前复权指数
-        因为要扫一遍表，暂时弃用
-        """
-        sql = "select * from" \
-              "(select ts_code, trade_date, close, row_number() over (partition by ts_code order by trade_date asc) r " \
-              "from %s ) t where t.r =1" % self.table_name
-        cursor = db.cursor()
-        cursor.execute(sql)
-        r = cursor.fetchall()
-        l = list()
-        for i in r:
-            df = api.pro_bar(ts_code=i[0], start_date=i[1], asset='I', end_date=date, adj='qfq', factors=['vr', 'tor'],
-                             adjfactor=True)
-            c1 = df['close'].tail(1).values[0]
-            if c1 != float(i[2]):
-                l.append(i[0])
-            logger.qfqlogger.info(date + ' need update index in ' + l)
-        return r
 
-    def update_data(self, start_dt=None, stocks=None):
+
+    def check_update_date(self):
+        """
+        确认存量数据情况
+        明确历史数据到哪天是可靠的
+        """
+        db.cursor.execute('select max(trade_date) from %s ' % self.table_name)
+        return db.cursor.fetchone()[0]
+
+    def update_data(self, last_trade_date=None, stocks=None):
+        """
+        指数数据全量更新
+        """
         end_dt = datetime.now().strftime('%Y%m%d')
-        qfq_infos = None
-        if start_dt is None:
-            start_dt = START_DATE
-        else:
-            qfq_infos = self.__get_qfq_info()
+        start_dt = START_DATE
         # ---获取列名
         col_sql = 'describe %s ' % self.table_name
         db.cursor.execute(col_sql)
@@ -592,40 +592,13 @@ class TushareMysqlEngineIndex(TushareMysqlEngine):
         if stocks is None:
             stocks = self.index
         for s in stocks:
-            qfq_info = qfq_infos.get(s)
-            if qfq_info is not None:
-                # 该指数的复权信息存在，且此次更新的时间要晚于该股票的上市时间
-                if start_dt > qfq_info[1]:
-                    temp_start_dt = qfq_info[1]
-            else:
-                temp_start_dt = start_dt
             df = api.pro_bar(ts_code=s, asset='I',
                              adj='qfq', freq='D', factors=['vr', 'tor'], adjfactor=True,
-                             start_date=temp_start_dt, end_date=end_dt, ma=(5, 10, 20, 30, 60))
+                             start_date=start_dt, end_date=end_dt, ma=(5, 10, 20, 30, 60))
             if df is None:
-                logger.qfqlogger.info('stock: ' + s + ' is Empty')
-                continue
-            if len(df) == 6000:  # 最多下载6000条记录
-                last_download_date = df['trade_date'].iloc[-1]
-                last_download_date = (datetime.datetime.strptime(last_download_date, '%Y%m%d')
-                                      - datetime.timedelta(days=1)).strftime("%Y%m%d")
-                df2 = api.pro_bar(ts_code=s, asset='I',
-                                  adj=None, freq='D', adjfactor=True,
-                                  start_date=start_dt, end_date=last_download_date, factors=['vr', 'tor'])
-                if len(df2) > 0:
-                    df = pd.concat([df, df2], axis=0)
-                close_new = df['close'].tail(1).values[0]
-                close_old = qfq_info[2]
-                if close_new != close_old:
-                    # --- 复权信息发生变化
-                    logger.qfqlogger.info('stock code: %s need to updte all cause the qfq was changed')
-                    # --- 清除该只股票的历史记录
-                    self.clear_data(start_dt=None, stocks=list().append(s))
-                else:
-                    # --- 复权信息不变
-                    df = df[df['trade_date'] >= start_dt]
-                # ---改变列名
-            logger.qfqlogger.info('stock ' + s + ' is updating')
+                self.logger.info('stock: ' + s + ' is Empty')
+                continue          # ---改变列名
+            self.logger.info('stock ' + s + ' is updating')
             df.rename(columns={'change': 'close_chg'}, inplace=True)
             df.drop_duplicates(inplace=True)
             df = df.sort_values(by=['trade_date'], ascending=False)
@@ -650,7 +623,7 @@ class TushareMysqlEngineIndex(TushareMysqlEngine):
                     db.cursor.execute(sql_impl)
                     db.db.commit()
                 except Exception as err:
-                    logger.qfqlogger.error(err)
+                    self.logger.error(err)
                     continue
-        logger.qfqlogger.info('index data is fully updated')
+        self.logger.info('index data is fully updated')
 
