@@ -255,8 +255,12 @@ class TushareMysqlEngineQFQ(TushareMysqlEngine):
         # ---改变列名
         df.rename(columns={'change': 'close_chg'}, inplace=True)
         cols = df.columns.tolist()
+        cols.append('avg')
         for ctx in range(0, len(cols)):
             col = cols[ctx]
+            if col == 'avg':
+                sql_comm += col + " decimal(20, 3), "
+                continue
             if isinstance(df[col].iloc[0], str):
                 sql_comm += col + " varchar(40), "
             elif isinstance(df[col].iloc[0], float):
@@ -312,8 +316,22 @@ class TushareMysqlEngineQFQ(TushareMysqlEngine):
             adj[i[2]] = i[14]
         return adj
 
+    def get_dates(self, enddate,ini_date='20090104' ):
+        """获得交易日"""
+        sql = "select distinct trade_date from stock_all_daily_qfq where trade_date between %s and %s order by trade_date desc" % (ini_date,enddate)
+        db.cursor.execute(sql)
+        res = db.cursor.fetchall()
+        return res
+
+
+
     def update_data(self, last_trade_date=None, stocks=None):
         end_dt = datetime.now().strftime('%Y%m%d')
+        trade_dates = self.get_dates(last_trade_date)
+        if len(trade_dates) == 0:
+            pre_trade_date = '20090101'
+        else:
+            pre_trade_date = trade_dates[60][0]
         if last_trade_date is None:
             start_dt = START_DATE
         else:
@@ -353,7 +371,7 @@ class TushareMysqlEngineQFQ(TushareMysqlEngine):
             adj = adj_info.get(s)
             df = api.pro_bar(ts_code=s, asset='E',
                              adj='qfq', freq='D', factors=['vr', 'tor'], adjfactor=True,
-                             start_date=start_dt, end_date=end_dt, ma=(5, 10, 20, 30, 60))
+                             start_date=pre_trade_date, end_date=end_dt, ma=(5, 10, 20, 30, 60))
             if df is None:
                 self.logger.info('updating stock: %s from %s to %s, the data is None!'% (s,start_dt,end_dt))
                 continue
@@ -376,6 +394,8 @@ class TushareMysqlEngineQFQ(TushareMysqlEngine):
                                  start_date=START_DATE, end_date=end_dt, ma=(5, 10, 20, 30, 60))
             # ---改变列名
             self.logger.info('updating stock: %s from %s to %s' % (s,start_dt,end_dt))
+            index_name = df[df['trade_date']<=last_trade_date].index
+            df.drop(index_name,inplace=True)
             df.rename(columns={'change': 'close_chg'}, inplace=True)
             df.drop_duplicates(inplace=True)
             df = df.sort_values(by=['trade_date'], ascending=False)
@@ -394,6 +414,8 @@ class TushareMysqlEngineQFQ(TushareMysqlEngine):
                             resu.append(resu0[k])
                     elif resu0[k] == None:
                         resu.append(-1)
+                #### 增加平均价格 总价/总量*当下adj/前adj
+                resu.append((resu[10]/resu[9])*(resu[13]/float(adj_new))*10)
                 try:
                     sql_impl = sql_insert + sql_value
                     sql_impl = sql_impl % tuple(resu)
@@ -482,7 +504,10 @@ class TushareMysqlEngineBASIC(TushareMysqlEngine):
                 # ---改变列名
                 self.logger.info('updating stock: %s from %s to %s' % (s,start_dt,end_dt))
                 df.drop_duplicates(inplace=True)
-                df = df.sort_values(by=['trade_date'], ascending=False)
+                try:
+                    df = df.sort_values(by=['trade_date'], ascending=False)
+                except Exception as e:
+                    print(df)
                 df.reset_index(inplace=True, drop=True)
                 c_len = df.shape[0]
                 for jtx in range(0, c_len):
@@ -589,8 +614,8 @@ class TushareMysqlEngineIndex(TushareMysqlEngine):
         sql_value = sql_value[0: len(sql_value) - 2]
         sql_value += " )"
         # ---获取数据
-        if stocks is None:
-            stocks = self.index
+        stocks = self.index
+        self.clear_data(start_dt=None)
         for s in stocks:
             df = api.pro_bar(ts_code=s, asset='I',
                              adj='qfq', freq='D', factors=['vr', 'tor'], adjfactor=True,
