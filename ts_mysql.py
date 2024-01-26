@@ -1,6 +1,6 @@
 """
 coding:utf-8
-@FileName:11
+@FileName:ts_mysql.py
 @Time:2023/2/4 10:43
 @Author: Xiang Xiao
 @Email: btxiaox@gmail.com
@@ -25,14 +25,16 @@ from decimal import Decimal
 class TushareMysqlEngine():
 
     def __init__(self):
-        if self.table_name == 'stock_all_daily_qfq':
+        if self.table_name == DB_NAME.get('qfq'):
             self.logger = logger.qfqlogger
-        elif self.table_name == 'stock_all_daily_wfq':
+        elif self.table_name == DB_NAME.get('wfq'):
             self.logger = logger.wfqlogger
-        elif self.table_name == 'stock_all_daily_basic':
+        elif self.table_name == DB_NAME.get('basic'):
             self.logger = logger.dailybasiclogger
-        elif self.table_name == 'stock_all_daily_index':
+        elif self.table_name == DB_NAME.get('index'):
             self.logger = logger.indexlogger
+        elif self.table_name == DB_NAME.get('cyq_perf'):
+            self.logger = logger.cyq_perflogger
 
     def create_table(self):
         """
@@ -66,7 +68,7 @@ class TushareMysqlEngine():
                     "select count(distinct ts_code) from %s where trade_date = '%s' " % (self.table_name, trade_date))
                 db_counts = db.cursor.fetchone()[0]
                 api_counts = len(api_df['ts_code'])
-                if db_counts == api_counts:
+                if db_counts >= api_counts:
                     self.logger.info(
                         'record in date ' + trade_date + ' is the last proper update time in table ' + self.table_name)
                     return trade_date
@@ -112,10 +114,11 @@ class TushareMysqlEngine():
         elif start_dt is not None:
             sql = "delete from %s where trade_date>'%s'" % (self.table_name, start_dt)
         else:
-            sql = "delete from %s where 1=1" % self.table_name
+            sql = "drop table %s" % self.table_name
         db.cursor.execute(sql)
-        db.db.commit()
+        self.commit = db.db.commit()
         self.logger.info('clear the table %s where sql is : %s' % (self.table_name, sql))
+        self.create_table()
         return 1
 
     def update_data(self, start_dt, stocks=None):
@@ -133,6 +136,7 @@ class TushareMysqlEngine():
         else:
             self.clear_data(start_dt=None)
             self.update_data(last_trade_date=START_DATE)
+
 
 
 class TushareMysqlEngineWFQ(TushareMysqlEngine):
@@ -494,14 +498,13 @@ class TushareMysqlEngineBASIC(TushareMysqlEngine):
             if len(df) == 6000:  # 最多下载6000条记录
                 last_download_date = df['trade_date'].iloc[-1]
                 last_download_date = (datetime.datetime.strptime(last_download_date, '%Y%m%d')
-                                      - datetime.timedelta(days=1)).strftime("%Y%m%d")
+                                      - timedelta(days=1)).strftime("%Y%m%d")
                 df2 = api.query(api_name='daily_basic', ts_code=s, start_date=last_download_date, end_date=end_dt)
                 if len(df2) > 0:
                     df = pd.concat([df, df2], axis=0)
             if df is None:
                 self.logger.info('updating stock: %s from %s to %s, the data is None!'% (s,start_dt,end_dt))
             else:
-                # ---改变列名
                 self.logger.info('updating stock: %s from %s to %s' % (s,start_dt,end_dt))
                 df.drop_duplicates(inplace=True)
                 try:
@@ -651,4 +654,105 @@ class TushareMysqlEngineIndex(TushareMysqlEngine):
                     self.logger.error(err)
                     continue
         self.logger.info('index data is fully updated')
+
+class TushareMysqlEngineCyqPerf(TushareMysqlEngine):
+
+    def __init__(self):
+        self.table_name = DB_NAME.get('cyq_perf')
+        super().__init__()
+
+    def create_table(self):
+        sql_comm = "create table if not exists %s " \
+                   "( id int not null auto_increment primary key," % self.table_name
+        # ---获取列名
+        df = api.CyQifnoApi(ts_code='000002.SZ',start_date= DATE1,end_date=DATE2)
+        cols = df.columns.tolist()
+        for ctx in range(0, len(cols)):
+            col = cols[ctx]
+            if isinstance(df[col].iloc[0], str):
+                sql_comm += col + " varchar(40), "
+            elif isinstance(df[col].iloc[0], float):
+                sql_comm += col + " decimal(20, 3), "
+        sql_comm += 'INDEX trade_date_index(trade_date), '
+        sql_comm += 'INDEX ts_stock_index(ts_code), '
+        sql_comm = sql_comm[0: len(sql_comm) - 2]
+        sql_comm += ") engine=innodb default charset=utf8mb4;"
+        db.cursor.execute(sql_comm)
+        self.logger.info('create the table %s if not exist ' % self.table_name)
+        return 1
+
+    def update_data(self,last_trade_date=None,stocks=None):
+        """
+        更新数据
+        """
+        end_dt = datetime.now().strftime('%Y%m%d')
+        start_dt = START_DATE
+        # ---获取列名
+        col_sql = 'describe %s ' % self.table_name
+        db.cursor.execute(col_sql)
+        cols = db.cursor.fetchall()
+        if len(cols) == 0:
+            return 0
+        # ---构建插入sql
+        sql_insert = "INSERT INTO %s ( " % self.table_name
+        sql_value = "VALUES ( "
+        for c in cols:
+            if c[0] == 'id':
+                continue
+            sql_insert += c[0] + ", "
+            if c[1] == 'int':
+                sql_value += "'%d', "
+            elif c[1] == 'decimal(20,3)':
+                sql_value += "'%.3f', "
+            elif c[1] == 'varchar(40)':
+                sql_value += "'%s', "
+        sql_insert = sql_insert[0: len(sql_insert) - 2]
+        sql_insert += " )"
+        sql_value = sql_value[0: len(sql_value) - 2]
+        sql_value += " )"
+        if stocks is None:
+            stocks = self.get_stock_list()
+        for s in stocks:
+            df = api.CyQifnoApi(ts_code=s,start_date=start_dt,end_date=end_dt)
+            if len(df) == 2000:  # 最多下载6000条记录
+                last_download_date = df['trade_date'].iloc[-1]
+                last_download_date = (datetime.strptime(last_download_date, '%Y%m%d')
+                                      - timedelta(days=1)).strftime("%Y%m%d")
+                df2 = api.CyQifnoApi(ts_code=s,start_date=last_download_date,end_date=end_dt)
+                if len(df2) > 0:
+                    df = pd.concat([df, df2], axis=0)
+            if df is None:
+                self.logger.info('updating stock: %s from %s to %s, the data is None!'% (s,start_dt,end_dt))
+            else:
+                self.logger.info('updating stock: %s from %s to %s' % (s,start_dt,end_dt))
+                df.drop_duplicates(inplace=True)
+                try:
+                    df = df.sort_values(by=['trade_date'], ascending=False)
+                except Exception as e:
+                    print(df)
+                df.reset_index(inplace=True, drop=True)
+                c_len = df.shape[0]
+                for jtx in range(0, c_len):
+                    resu0 = list(df.iloc[c_len - 1 - jtx])
+                    resu = []
+                    for k in range(len(resu0)):
+                        if isinstance(resu0[k], str):
+                            resu.append(resu0[k])
+                        elif isinstance(resu0[k], float):
+                            if np.isnan(resu0[k]):
+                                resu.append(-1)
+                            else:
+                                resu.append(resu0[k])
+                        elif resu0[k] == None:
+                            resu.append(-1)
+                    try:
+                        sql_impl = sql_insert + sql_value
+                        sql_impl = sql_impl % tuple(resu)
+                        db.cursor.execute(sql_impl)
+                        db.db.commit()
+                    except Exception as err:
+                        self.logger.error(err)
+                        continue
+                self.logger.info('updated stock: %s from %s to %s, with lenth is %s' % (s, start_dt, end_dt,str(len(df))))
+        self.logger.info('cyqinfo data is fully updated')
 

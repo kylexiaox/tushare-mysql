@@ -1,6 +1,6 @@
 """
 coding:utf-8
-@FileName:11
+@FileName:ts_api.py
 @Time:2023/3/4 00:43
 @Author: Xiang Xiao
 @Email: btxiaox@gmail.com
@@ -129,9 +129,57 @@ class DataProQpmSafe():
 
         return df
 
+    def CyQifnoApi(self,ts_code,start_date,end_date):
+        """
+        每日筹码信息
+        """
+        try:
+            df = self.pro.cyq_perf(ts_code=ts_code, start_date=start_date,end_date=end_date)
+            if len(df) == 0:  ## 有时候接口有问题就不报错，返回为0，要捕捉异常
+                raise Exception('stock %s length of df is 0'%ts_code)
+        except Exception as e:
+            print(e)
+            logger.apilogger.error(e)
+            logger.apilogger.info('sleeping 30s... and retry')
+            time.sleep(30)
+            self.c += 5
+            self.freq = self.counts / (time.time() - self.last_tik) * 60
+            self.counts = 0
+            self.last_tik = time.time()
+            logger.apilogger.info('the frequency is ' + str(self.freq) + 'times per minute')
+            logger.apilogger.info("c is update to %d" % self.c)
+            df = self.pro.cyq_perf(ts_code=ts_code, start_date=start_date,end_date=end_date)
+        self.counts += 1
+        if self.counts >= (self.qpm - self.c):
+            # 安全起见，降低c qpm
+            current_time = time.time()
+            logger.apilogger.info(
+                'TIME GAP = ' + str(current_time - self.last_tik) + ", run " + str(self.qpm - self.c) + " stocks ")
+            self.freq = self.counts / (current_time - self.last_tik) * 60
+            logger.apilogger.info('the frequency is ' + str(self.freq) + 'times per minute')
+            if (current_time - self.last_tik) > 30:
+                # 重置计数器
+                if self.c > 5:
+                    self.c -= 1
+                self.counts = 0
+                self.last_tik = current_time
+            else:
+                # 等到30秒
+                self.counts = 0
+                self.last_tik = time.time()
+                logger.apilogger.info('cyqperf api wait for ' + str(35 - (current_time - self.last_tik)) + ' seconds')
+                time.sleep(35 - (current_time - self.last_tik))
+
+        return df
+
+
+
+
+
 
 api:DataProQpmSafe = DataProQpmSafe()
 
-
-
-
+if __name__ == '__main__':
+    # df = api.CyQifnoApi(ts_code='000030.SZ', start_date=20100101, end_date=20231112)
+    df = api.query(api_name='daily_basic', ts_code='430017.BJ', start_date=20100101, end_date=20231112)
+    print(df)
