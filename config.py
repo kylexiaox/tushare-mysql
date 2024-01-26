@@ -14,7 +14,7 @@ START_DATE = '20100101'
 DATE1= '20220303'
 DATE2= '20220503'
 # tushare 的token
-TOKEN= '5d4ee73a7f699e7d3430177b0bf3fa2ad4f5c13108b073a1e7e37e46'
+TOKEN= 'token'
 # 接口的请求频次限制
 QPM = 200
 # 数据库参数
